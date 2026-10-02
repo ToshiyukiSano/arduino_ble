@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI仕分け 操作パネル</title>
+<!--
+  第4回 AI仕分け操作ページ（授業用）【下書き・実機未検証】
+  ・講師が Vercel に HTTPS で公開し、生徒は PC の Chrome で公開URLを開く（カメラと Web Bluetooth は HTTPS が必要）。
+  ・ページを開いただけでは接続しない。カメラの許可・「Bluetooth接続」・機器の選択は生徒が操作する。
+  ・AI の判定はこのページ（ブラウザ）の中で行う。カメラ画像は Arduino へ送らない。
+  ・Arduino へは BLE で 1 文字の命令（L / C / R）だけを送る。第3回の sorter_ble と同じ UUID。
+  ・Teachable Machine の画像モデル（クラス名 LEFT / RIGHT / EMPTY）を読み込む。
+  ・ライブラリのバージョンは公式ライブラリ README の例（tfjs 1.3.1 / tmImage 0.8.3）に合わせた。授業前に動作確認すること。
+-->
+<style>
+  :root { --ink:#1f2a44; --sub:#4b5565; --line:#c9d1e0; --soft:#eef2f8; --blue:#2b5daa; --rust:#a6461a; --ok:#1b7f4b; --ng:#b42318; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:"BIZ UDPGothic","Meiryo",sans-serif; color:var(--ink); background:#fff; }
+  main { max-width: 1080px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 30px; margin: 0 0 14px; }
+  .card { border:2px solid var(--line); border-radius:12px; padding:12px 16px; margin-bottom:14px; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+  label { font-weight:bold; font-size:20px; }
+  input[type=text] { font: inherit; font-size:18px; padding:8px 10px; flex:1; min-width:280px; border:2px solid var(--line); border-radius:8px; }
+  button, select { font: inherit; font-size:20px; padding:10px 18px; border-radius:10px; border:2px solid var(--ink); background:#fff; color:var(--ink); cursor:pointer; }
+  button.primary { background:var(--blue); border-color:var(--blue); color:#fff; }
+  button.go { background:var(--rust); border-color:var(--rust); color:#fff; font-size:28px; padding:16px 28px; }
+  button:disabled { opacity:.35; cursor:not-allowed; }
+  .grid { display:grid; grid-template-columns: 340px 1fr; gap:16px; }
+  #cam { width:320px; height:320px; background:#3a4256; border-radius:8px; display:flex; align-items:center; justify-content:center; color:#fff; overflow:hidden; }
+  #cam canvas { width:320px; height:320px; }
+  .bar { display:grid; grid-template-columns: 90px 1fr 60px; align-items:center; gap:8px; font-size:20px; margin:6px 0; }
+  .bar b { font-family:"BIZ UDGothic",monospace; }
+  .track { height:20px; background:var(--soft); border:1px solid var(--line); border-radius:4px; overflow:hidden; }
+  .fill { height:100%; width:0; background:var(--blue); }
+  .status { font-size:22px; font-weight:bold; }
+  #msg { font-size:22px; font-weight:bold; min-height:1.5em; }
+  .ok { color:var(--ok); } .ng { color:var(--ng); }
+  #log { font-family:"BIZ UDGothic",monospace; font-size:15px; background:var(--soft); border-radius:8px; padding:10px; height:130px; overflow:auto; white-space:pre-wrap; }
+  details { font-size:17px; margin-top:8px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+<h1>AI仕分け 操作パネル</h1>
+
+<div class="card">
+  <div class="row">
+    <label for="url">① モデルURL</label>
+    <input id="url" type="text" placeholder="https://teachablemachine.withgoogle.com/models/（自分のID）/">
+    <button id="load" class="primary">読み込み</button>
+    <span id="modelState" class="status">未読み込み</span>
+  </div>
+  <details>
+    <summary>URLが使えないとき：モデルファイルから読み込む（先生の指示があるときだけ）</summary>
+    <div class="row" style="margin-top:8px">
+      model.json <input id="fModel" type="file" accept=".json">
+      weights.bin <input id="fWeights" type="file" accept=".bin">
+      metadata.json <input id="fMeta" type="file" accept=".json">
+      <button id="loadFiles">ファイルから読み込み</button>
+    </div>
+  </details>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <div class="row" style="margin-bottom:8px">
+      <label>② カメラ</label>
+      <select id="camSelect"><option value="">（カメラを選ぶ）</option></select>
+      <button id="camStart" disabled>開始</button>
+    </div>
+    <div id="cam">カメラ未開始</div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <label>③ Bluetooth</label>
+      <button id="connect" class="primary">Bluetooth接続</button>
+      <button id="disconnect" disabled>切断</button>
+      <span id="bleState" class="status">未接続</span>
+    </div>
+    <div style="margin-top:12px">
+      <div class="bar"><b>LEFT</b><div class="track"><div class="fill" id="pLEFT"></div></div><span id="tLEFT">—</span></div>
+      <div class="bar"><b>RIGHT</b><div class="track"><div class="fill" id="pRIGHT"></div></div><span id="tRIGHT">—</span></div>
+      <div class="bar"><b>EMPTY</b><div class="track"><div class="fill" id="pEMPTY"></div></div><span id="tEMPTY">—</span></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button id="go" class="go" disabled>判定して仕分ける</button>
+      <span class="status">状態：<span id="runState">未接続</span></span>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <span style="font-size:18px">手動</span>
+      <button class="man" data-cmd="L" disabled>◀ 左</button>
+      <button class="man" data-cmd="C" disabled>● 中央</button>
+      <button class="man" data-cmd="R" disabled>右 ▶</button>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div id="msg">メッセージ：—</div>
+  <div id="log"></div>
+</div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8.3/dist/teachablemachine-image.min.js"></script>
+<script>
+// ===== 講師が調整する設定（設定例。実機・教室の照明で調整する）=====
+const THRESHOLD = 0.80;      // 一番大きい値がこれより小さいと「判定が不確か」として動かさない
+const FRAMES = 5;            // 何枚分の判定を平均するか
+const FRAME_GAP_MS = 100;    // 判定の間隔
+const DONE_TIMEOUT_MS = 4000;// 中央へ戻る返事を待つ時間（Arduino の RETURN_TIME より長く）
+const FLIP = true;           // Teachable Machine の撮影画面に合わせて左右反転（公式ライブラリの例に合わせた。要確認）
+const CMD = { LEFT: 'L', RIGHT: 'R' };
+// ====================================================================
+
+const SERVICE_UUID = 'e5969935-3a7c-4236-9516-9cd2c60c2c6d';
+const COMMAND_UUID = '1c2fb868-731c-4916-bbc4-952cb7d5133a';
+const STATUS_UUID  = 'a483820f-fee4-499b-b366-738eeb482acb';
+
+const $ = (id) => document.getElementById(id);
+let model = null, webcam = null, device = null, commandChar = null;
+let busy = false, doneTimer = null;
+
+function log(t) { $('log').textContent = new Date().toLocaleTimeString('ja-JP') + '  ' + t + '\n' + $('log').textContent; }
+function msg(t, cls) { $('msg').textContent = 'メッセージ：' + t; $('msg').className = cls || ''; }
+function setRun(t) { $('runState').textContent = t; }
+function refresh() {
+  const conn = !!(device && device.gatt.connected && commandChar);
+  if (!busy && $('runState').textContent !== 'エラー') setRun(conn ? '準備中' : '未接続');
+  $('connect').disabled = conn; $('disconnect').disabled = !conn;
+  document.querySelectorAll('.man').forEach(b => b.disabled = !conn || busy);
+  $('go').disabled = !(conn && model && webcam) || busy;
+  $('camStart').disabled = !model;
+}
+try { const u = localStorage.getItem('tmModelURL'); if (u) $('url').value = u; } catch (e) {}
+
+// ---- モデル ----
+function checkClasses() {
+  const labels = model.getClassLabels();
+  const need = ['LEFT', 'RIGHT', 'EMPTY'];
+  const miss = need.filter(n => !labels.includes(n));
+  if (miss.length) { msg('クラス名が違います（' + labels.join(', ') + '）。LEFT・RIGHT・EMPTY にしてください', 'ng'); model = null; $('modelState').textContent = 'エラー'; return false; }
+  $('modelState').textContent = '読み込み済み'; $('modelState').className = 'status ok';
+  msg('モデルを読み込みました。カメラを開始してください', 'ok'); return true;
+}
+$('load').onclick = async () => {
+  let u = $('url').value.trim();
+  if (!u) { msg('モデルURLを入れてください', 'ng'); return; }
+  if (!u.endsWith('/')) u += '/';
+  try {
+    $('modelState').textContent = '読み込み中…';
+    model = await tmImage.load(u + 'model.json', u + 'metadata.json');
+    if (checkClasses()) { try { localStorage.setItem('tmModelURL', u); } catch (e) {} log('モデル：' + u); }
+  } catch (e) { model = null; $('modelState').textContent = 'エラー'; msg('読み込めませんでした。URLを確認してください', 'ng'); log(e.message); }
+  refresh();
+};
+$('loadFiles').onclick = async () => {
+  const m = $('fModel').files[0], w = $('fWeights').files[0], md = $('fMeta').files[0];
+  if (!m || !w || !md) { msg('3つのファイルを選んでください', 'ng'); return; }
+  try { model = await tmImage.loadFromFiles(m, w, md); if (checkClasses()) log('モデル：ファイルから'); }
+  catch (e) { model = null; msg('ファイルから読み込めませんでした', 'ng'); log(e.message); }
+  refresh();
+};
+
+// ---- カメラ ----
+async function listCams() {
+  try {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+    devs.forEach((d, i) => { const o = document.createElement('option'); o.value = d.deviceId; o.textContent = d.label || ('カメラ ' + (i + 1)); $('camSelect').appendChild(o); });
+  } catch (e) { log('カメラ一覧を取得できません：' + e.message); }
+}
+listCams();
+$('camStart').onclick = async () => {
+  try {
+    if (webcam) webcam.stop();
+    webcam = new tmImage.Webcam(320, 320, FLIP);
+    const id = $('camSelect').value;
+    await webcam.setup(id ? { deviceId: { exact: id } } : {});
+    await webcam.play();
+    $('cam').innerHTML = ''; $('cam').appendChild(webcam.canvas);
+    if ($('camSelect').options.length <= 1) listCams();
+    (function loop() { webcam.update(); requestAnimationFrame(loop); })();
+    msg('カメラを開始しました。2時間目と同じ映り方か確認してください', 'ok');
+  } catch (e) { webcam = null; msg('カメラを開始できません。カメラの許可・選択を確認し、Teachable Machine の画面でカメラを使っていたら止めてください', 'ng'); log(e.message); }
+  refresh();
+};
+
+// ---- Bluetooth ----
+if (!('bluetooth' in navigator)) msg('このブラウザでは Bluetooth が使えません（PC の Chrome で開いてください）', 'ng');
+$('connect').onclick = async () => {
+  try {
+    $('bleState').textContent = '機器をえらんでいます…';
+    device = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: 'Sorter-' }], optionalServices: [SERVICE_UUID] });
+    device.addEventListener('gattserverdisconnected', () => { commandChar = null; $('bleState').textContent = '未接続'; $('bleState').className = 'status'; busy = false; setRun('準備中'); log('切断されました'); refresh(); });
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    commandChar = await service.getCharacteristic(COMMAND_UUID);
+    const st = await service.getCharacteristic(STATUS_UUID);
+    await st.startNotifications();
+    st.addEventListener('characteristicvaluechanged', (e) => {
+      const s = new TextDecoder().decode(e.target.value); log('返事：' + s);
+      if (busy && s.startsWith('auto C')) finish('完了：中央へ戻りました。次の物を置けます');
+    });
+    $('bleState').textContent = '接続済み（' + device.name + '）'; $('bleState').className = 'status ok'; setRun('準備中');
+    log('接続：' + device.name);
+  } catch (e) { $('bleState').textContent = '未接続'; msg('接続できませんでした', 'ng'); log(e.message); }
+  refresh();
+};
+$('disconnect').onclick = () => { if (device && device.gatt.connected) device.gatt.disconnect(); };
+async function send(c) { await commandChar.writeValueWithoutResponse(new Uint8Array([c.charCodeAt(0)])); log('送信：' + c); }
+document.querySelectorAll('.man').forEach(b => b.onclick = async () => { try { await send(b.dataset.cmd); msg('手動で命令 ' + b.dataset.cmd + ' を送りました'); } catch (e) { msg('送れませんでした', 'ng'); log(e.message); } });
+
+// ---- 判定して仕分ける（1回押すと1回だけ）----
+function show(avg) { ['LEFT', 'RIGHT', 'EMPTY'].forEach(c => { const v = avg[c] || 0; $('p' + c).style.width = (v * 100).toFixed(0) + '%'; $('t' + c).textContent = (v * 100).toFixed(0) + '%'; }); }
+function finish(t) { busy = false; clearTimeout(doneTimer); setRun('完了'); msg(t, 'ok'); refresh(); }
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+$('go').onclick = async () => {
+  if (busy) return;
+  busy = true; setRun('動作中'); refresh(); msg('判定しています…');
+  try {
+    const sum = {};
+    for (let i = 0; i < FRAMES; i++) {
+      webcam.update();
+      const p = await model.predict(webcam.canvas);
+      p.forEach(x => sum[x.className] = (sum[x.className] || 0) + x.probability);
+      await sleep(FRAME_GAP_MS);
+    }
+    const avg = {}; Object.keys(sum).forEach(k => avg[k] = sum[k] / FRAMES); show(avg);
+    const top = Object.keys(avg).sort((a, b) => avg[b] - avg[a])[0];
+    log('判定：' + top + ' ' + (avg[top] * 100).toFixed(0) + '%');
+    if (top === 'EMPTY') { busy = false; setRun('準備中'); msg('EMPTY：何も置かれていません。動かしません'); refresh(); return; }
+    if (avg[top] < THRESHOLD) { busy = false; setRun('準備中'); msg('判定が不確かです。置き直して、もう一度押してください', 'ng'); refresh(); return; }
+    await send(CMD[top]);
+    msg(top + ' と判定 → 命令 ' + CMD[top] + ' を送りました');
+    doneTimer = setTimeout(async () => {
+      try { await send('C'); } catch (e) {}
+      finish('中央へ戻す命令を送りました（RETURN_TIME の設定を確認）');
+    }, DONE_TIMEOUT_MS);
+  } catch (e) { busy = false; setRun('エラー'); msg('エラー：接続とカメラを確認して、もう一度試してください', 'ng'); log(e.message); refresh(); }
+};
+refresh();
+</script>
+</body>
+</html>
