@@ -3,245 +3,656 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI仕分け 操作パネル</title>
+<title>AI仕分け機 操作ページ</title>
 <!--
-  第4回 AI仕分け操作ページ（授業用）【下書き・実機未検証】
-  ・講師が Vercel に HTTPS で公開し、生徒は PC の Chrome で公開URLを開く（カメラと Web Bluetooth は HTTPS が必要）。
-  ・ページを開いただけでは接続しない。カメラの許可・「Bluetooth接続」・機器の選択は生徒が操作する。
-  ・AI の判定はこのページ（ブラウザ）の中で行う。カメラ画像は Arduino へ送らない。
-  ・Arduino へは BLE で 1 文字の命令（L / C / R）だけを送る。第3回の sorter_ble と同じ UUID。
-  ・Teachable Machine の画像モデル（クラス名 LEFT / RIGHT / EMPTY）を読み込む。
-  ・ライブラリのバージョンは公式ライブラリ README の例（tfjs 1.3.1 / tmImage 0.8.3）に合わせた。授業前に動作確認すること。
+  AI仕分け機 操作ページ（第3回・第4回 共通）【新規下書き・実機未検証】
+  ・講師が Vercel に HTTPS で公開し、生徒は PC の Chrome で開く（カメラと Web Bluetooth は HTTPS が必要）。
+  ・ページを開いただけでは接続しない。「Bluetooth接続」を押して機器（Sorter-01〜09）を選ぶ。
+  ・AI の認識はこのページ（PC のブラウザ）の中で行う。カメラ画像は Arduino にも Vercel にも送らない。
+  ・Arduino へは BLE で 1 文字の命令だけを送る（sorter_ble.ino と同じ UUID・同じ命令）。
+      S = 自動運転開始（揺れ開始）  X = 停止（中央へ）  1 = 左へ仕分け  2 = 右へ仕分け
+      L / C / R = 手動で左・中央・右へ（止まったまま）  H = 合図（1秒ごと）  ? = 状態を聞く
+  ・第3回：「Bluetooth接続」と「調整用（手動）」だけを使う。
+  ・第4回：「Bluetooth接続」→「カメラ開始」→ モデル読み込み →「自動運転開始」→「停止」。
+  ・オリジナル（Google Tiny Sorter の p5.js）にならい、
+      認識は止めずに続ける／確率 0.90 以上で仕分け／クラスは3つ以上（1つは「何もない」）。
+    変更点：同じ判定が一定時間続いたら送る・仕分け中は送らない・終わったら少し待つ・合図を送る。
+  ・ライブラリは前の版と同じ tfjs 1.3.1 / @teachablemachine/image 0.8.3。授業前に動作確認すること。
 -->
 <style>
-  :root { --ink:#1f2a44; --sub:#4b5565; --line:#c9d1e0; --soft:#eef2f8; --blue:#2b5daa; --rust:#a6461a; --ok:#1b7f4b; --ng:#b42318; }
+  :root { --ink:#1f2a44; --sub:#4b5565; --line:#c9d1e0; --soft:#eef2f8; --blue:#2b5daa; --rust:#a6461a; --ok:#1b7f4b; --ng:#b42318; --warn:#8a5a00; }
   * { box-sizing: border-box; }
   body { margin:0; font-family:"BIZ UDPGothic","Meiryo",sans-serif; color:var(--ink); background:#fff; }
-  main { max-width: 1080px; margin: 0 auto; padding: 20px 16px 40px; }
-  h1 { font-size: 30px; margin: 0 0 14px; }
-  .card { border:2px solid var(--line); border-radius:12px; padding:12px 16px; margin-bottom:14px; }
-  .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
-  label { font-weight:bold; font-size:20px; }
-  input[type=text] { font: inherit; font-size:18px; padding:8px 10px; flex:1; min-width:280px; border:2px solid var(--line); border-radius:8px; }
-  button, select { font: inherit; font-size:20px; padding:10px 18px; border-radius:10px; border:2px solid var(--ink); background:#fff; color:var(--ink); cursor:pointer; }
-  button.primary { background:var(--blue); border-color:var(--blue); color:#fff; }
-  button.go { background:var(--rust); border-color:var(--rust); color:#fff; font-size:28px; padding:16px 28px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 16px 16px 40px; }
+  h1 { font-size: 28px; margin: 0 0 10px; }
+  h2 { font-size: 21px; margin: 0 0 8px; }
+  .card { border:2px solid var(--line); border-radius:12px; padding:12px 16px; margin-bottom:14px; background:#fff; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  button, select, input { font: inherit; }
+  button { font-size:20px; padding:10px 16px; border-radius:10px; border:2px solid var(--ink); background:#fff; color:var(--ink); cursor:pointer; }
   button:disabled { opacity:.35; cursor:not-allowed; }
-  .grid { display:grid; grid-template-columns: 340px 1fr; gap:16px; }
-  #cam { width:320px; height:320px; background:#3a4256; border-radius:8px; display:flex; align-items:center; justify-content:center; color:#fff; overflow:hidden; }
+  .main-btns { display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; }
+  .main-btns button { font-size:24px; font-weight:bold; padding:16px 8px; min-height:84px; }
+  .main-btns .num { display:block; font-size:16px; font-weight:normal; }
+  #connect { background:var(--blue); border-color:var(--blue); color:#fff; }
+  #camStart { background:#fff; }
+  #autoStart { background:var(--rust); border-color:var(--rust); color:#fff; }
+  #stop { background:#fff; border-width:4px; border-color:var(--ng); color:var(--ng); }
+  /* 状態の表示（色だけでなく記号と文字で示す） */
+  #banner { font-size:30px; font-weight:bold; padding:14px 18px; border-radius:12px; border:4px solid var(--ink); margin-bottom:12px; display:flex; gap:14px; align-items:center; }
+  #banner .sym { font-size:38px; width:48px; text-align:center; }
+  #banner.run { border-color:var(--rust); }
+  #banner.stopB { border-style:dashed; }
+  #banner.err { border-color:var(--ng); color:var(--ng); }
+  .ready { display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; margin-top:10px; }
+  .chip { border:2px solid var(--line); border-radius:10px; padding:8px 10px; font-size:18px; }
+  .chip b { display:block; font-size:16px; color:var(--sub); }
+  .chip.yes { border-color:var(--ok); }
+  .chip.yes span::before { content:"✓ "; }
+  .chip.no span::before { content:"✕ "; }
+  /* 流れ図：今の段階を太枠と「▶いまここ」で示す */
+  .flow { display:grid; grid-template-columns: repeat(5, 1fr); gap:6px; }
+  .step { border:2px solid var(--line); border-radius:10px; padding:8px 6px; text-align:center; font-size:18px; position:relative; }
+  .step .n { display:block; font-size:15px; color:var(--sub); }
+  .step.now { border:4px solid var(--rust); font-weight:bold; }
+  .step.now::after { content:"▶ いまここ"; display:block; font-size:14px; color:var(--rust); }
+  .grid { display:grid; grid-template-columns: 340px 1fr; gap:14px; }
+  #cam { width:320px; height:320px; background:#3a4256; border-radius:8px; display:flex; align-items:center; justify-content:center; color:#fff; overflow:hidden; font-size:20px; }
   #cam canvas { width:320px; height:320px; }
-  .bar { display:grid; grid-template-columns: 90px 1fr 60px; align-items:center; gap:8px; font-size:20px; margin:6px 0; }
-  .bar b { font-family:"BIZ UDGothic",monospace; }
-  .track { height:20px; background:var(--soft); border:1px solid var(--line); border-radius:4px; overflow:hidden; }
+  .bar { display:grid; grid-template-columns: minmax(90px,1.2fr) 2fr 64px 128px; align-items:center; gap:8px; font-size:19px; margin:6px 0; }
+  .bar .name { font-family:"BIZ UDGothic",monospace; font-weight:bold; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .bar.top .name::before { content:"▶ "; }
+  .track { height:22px; background:var(--soft); border:1px solid var(--line); border-radius:4px; overflow:hidden; position:relative; }
   .fill { height:100%; width:0; background:var(--blue); }
-  .status { font-size:22px; font-weight:bold; }
+  .thr { position:absolute; top:0; bottom:0; width:2px; background:var(--ink); }
+  .bar select { font-size:16px; padding:4px; border:2px solid var(--line); border-radius:6px; }
+  #judge { font-size:24px; font-weight:bold; margin-top:8px; min-height:1.4em; }
+  #holdTrack { height:12px; background:var(--soft); border:1px solid var(--line); border-radius:4px; overflow:hidden; margin-top:4px; }
+  #holdFill { height:100%; width:0; background:var(--rust); }
+  .bins { display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:10px; }
+  .bin { border:2px solid var(--line); border-radius:10px; padding:8px; min-height:96px; }
+  .bin h3 { margin:0 0 6px; font-size:19px; }
+  .bin .thumbs { display:flex; gap:4px; flex-wrap:wrap; }
+  .bin canvas { width:56px; height:56px; border-radius:4px; border:1px solid var(--line); }
   #msg { font-size:22px; font-weight:bold; min-height:1.5em; }
-  .ok { color:var(--ok); } .ng { color:var(--ng); }
-  #log { font-family:"BIZ UDGothic",monospace; font-size:15px; background:var(--soft); border-radius:8px; padding:10px; height:130px; overflow:auto; white-space:pre-wrap; }
-  details { font-size:17px; margin-top:8px; }
-  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  #msg.ng { color:var(--ng); } #msg.ng::before { content:"⚠ "; }
+  #msg.ok { color:var(--ok); }
+  #log { font-family:"BIZ UDGothic",monospace; font-size:14px; background:var(--soft); border-radius:8px; padding:10px; height:150px; overflow:auto; white-space:pre-wrap; }
+  details { margin-bottom:14px; border:2px solid var(--line); border-radius:12px; padding:10px 16px; }
+  summary { font-size:21px; font-weight:bold; cursor:pointer; }
+  .manual button { min-width:150px; }
+  .set { display:grid; grid-template-columns: 1fr 140px; gap:8px 12px; align-items:center; font-size:18px; max-width:760px; }
+  .set input[type=number] { font-size:18px; padding:6px; border:2px solid var(--line); border-radius:6px; width:130px; }
+  .set small { display:block; color:var(--sub); font-size:14px; }
+  input[type=text] { font-size:17px; padding:8px 10px; flex:1; min-width:280px; border:2px solid var(--line); border-radius:8px; }
+  .note { font-size:15px; color:var(--sub); }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } .main-btns, .ready { grid-template-columns: 1fr 1fr; } .flow { grid-template-columns: 1fr 1fr 1fr; } }
 </style>
 </head>
 <body>
 <main>
-<h1>AI仕分け 操作パネル</h1>
+<h1>AI仕分け機 操作ページ</h1>
 
-<div class="card">
-  <div class="row">
-    <label for="url">① モデルURL</label>
-    <input id="url" type="text" placeholder="https://teachablemachine.withgoogle.com/models/（自分のID）/">
-    <button id="load" class="primary">読み込み</button>
-    <span id="modelState" class="status">未読み込み</span>
+<!-- いまの状態 -->
+<div id="banner" class="stopB" role="status" aria-live="polite"><span class="sym" id="bannerSym">■</span><span id="bannerText">未接続：「Bluetooth接続」を押してください</span></div>
+
+<!-- 主なボタン -->
+<div class="card" id="mainCard">
+  <div class="main-btns">
+    <button id="connect"><span class="num">①</span>Bluetooth接続</button>
+    <button id="camStart"><span class="num">②</span>カメラ開始</button>
+    <button id="autoStart" disabled><span class="num">④</span>自動運転開始</button>
+    <button id="stop" disabled><span class="num">⑤</span>■ 停止</button>
   </div>
-  <details>
-    <summary>URLが使えないとき：モデルファイルから読み込む（先生の指示があるときだけ）</summary>
-    <div class="row" style="margin-top:8px">
+  <div class="ready">
+    <div class="chip no" id="rBle"><b>① Bluetooth</b><span>未接続</span></div>
+    <div class="chip no" id="rCam"><b>② カメラ</b><span>未開始</span></div>
+    <div class="chip no" id="rModel"><b>③ AIモデル</b><span>未読み込み</span></div>
+    <div class="chip no" id="rAuto"><b>④ 自動運転</b><span>停止中</span></div>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <button id="disconnect" disabled style="font-size:17px;padding:6px 12px">切断</button>
+    <span class="note" id="devName">機器：—</span>
+    <span class="note">カメラ：</span><select id="camSelect" style="font-size:16px;padding:4px"><option value="">（自動で選ぶ）</option></select>
+  </div>
+</div>
+
+<!-- ③ モデル -->
+<div class="card" id="modelCard">
+  <h2>③ AIモデル（Teachable Machine の画像モデル）</h2>
+  <div class="row">
+    <input id="url" type="text" placeholder="https://teachablemachine.withgoogle.com/models/（自分のID）/">
+    <button id="load">モデル読み込み</button>
+  </div>
+  <details style="margin:8px 0 0;border:none;padding:0">
+    <summary style="font-size:17px">URLが使えないとき：モデルファイルから読み込む（先生の指示があるときだけ）</summary>
+    <div class="row" style="margin-top:8px;font-size:16px">
       model.json <input id="fModel" type="file" accept=".json">
       weights.bin <input id="fWeights" type="file" accept=".bin">
       metadata.json <input id="fMeta" type="file" accept=".json">
-      <button id="loadFiles">ファイルから読み込み</button>
+      <button id="loadFiles" style="font-size:17px">ファイルから読み込み</button>
     </div>
   </details>
 </div>
 
+<!-- 流れ -->
+<div class="card">
+  <h2>自動運転の流れ</h2>
+  <div class="flow">
+    <div class="step" id="f1"><span class="n">1</span>揺れて送る</div>
+    <div class="step" id="f2"><span class="n">2</span>認識する</div>
+    <div class="step" id="f3"><span class="n">3</span>左右へ排出</div>
+    <div class="step" id="f4"><span class="n">4</span>中央へ戻る</div>
+    <div class="step" id="f5"><span class="n">5</span>次の物へ</div>
+  </div>
+</div>
+
 <div class="grid">
   <div class="card">
-    <div class="row" style="margin-bottom:8px">
-      <label>② カメラ</label>
-      <select id="camSelect"><option value="">（カメラを選ぶ）</option></select>
-      <button id="camStart" disabled>開始</button>
-    </div>
+    <h2>カメラ</h2>
     <div id="cam">カメラ未開始</div>
+    <p class="note">画面は鏡のように左右反転して表示します（Teachable Machine の撮影画面と同じ向き）。</p>
   </div>
 
   <div class="card">
-    <div class="row">
-      <label>③ Bluetooth</label>
-      <button id="connect" class="primary">Bluetooth接続</button>
-      <button id="disconnect" disabled>切断</button>
-      <span id="bleState" class="status">未接続</span>
-    </div>
-    <div style="margin-top:12px">
-      <div class="bar"><b>LEFT</b><div class="track"><div class="fill" id="pLEFT"></div></div><span id="tLEFT">—</span></div>
-      <div class="bar"><b>RIGHT</b><div class="track"><div class="fill" id="pRIGHT"></div></div><span id="tRIGHT">—</span></div>
-      <div class="bar"><b>EMPTY</b><div class="track"><div class="fill" id="pEMPTY"></div></div><span id="tEMPTY">—</span></div>
-    </div>
-    <div class="row" style="margin-top:12px">
-      <button id="go" class="go" disabled>判定して仕分ける</button>
-      <span class="status">状態：<span id="runState">未接続</span></span>
-    </div>
-    <div class="row" style="margin-top:12px">
-      <span style="font-size:18px">手動</span>
-      <button class="man" data-cmd="L" disabled>◀ 左</button>
-      <button class="man" data-cmd="C" disabled>● 中央</button>
-      <button class="man" data-cmd="R" disabled>右 ▶</button>
+    <h2>AIの認識（クラス名・確率・仕分け先）</h2>
+    <div id="bars"><p class="note">モデルを読み込むと、ここにクラス名が出ます。</p></div>
+    <div class="note">縦線＝仕分けに必要な確率（<span id="thrText">90</span>%）。仕分け先は先生の指示があるときだけ変える。</div>
+    <div id="judge">今の判定：—</div>
+    <div class="note">同じ判定が続いた時間（<span id="holdText">0.3</span>秒で仕分け）</div>
+    <div id="holdTrack"><div id="holdFill"></div></div>
+    <div class="bins">
+      <div class="bin"><h3>◀ 左へ仕分けた：<span id="cntL">0</span> 個</h3><div class="thumbs" id="thL"></div></div>
+      <div class="bin"><h3>右へ仕分けた：<span id="cntR">0</span> 個 ▶</h3><div class="thumbs" id="thR"></div></div>
     </div>
   </div>
 </div>
 
+<details id="manualBox">
+  <summary>調整用（手動）：組み立ての確認・角度の調整に使う</summary>
+  <p class="note">自動運転中は使えません。先に「停止」を押してください。</p>
+  <div class="row manual" style="margin-top:8px">
+    <span style="font-size:18px;width:9em">止まったまま</span>
+    <button class="man" data-cmd="L" disabled>◀ 左</button>
+    <button class="man" data-cmd="C" disabled>● 中央</button>
+    <button class="man" data-cmd="R" disabled>右 ▶</button>
+  </div>
+  <div class="row manual" style="margin-top:8px">
+    <span style="font-size:18px;width:9em">傾けて戻る</span>
+    <button class="man" data-cmd="1" disabled>◀ 左へ排出テスト</button>
+    <button class="man" data-cmd="2" disabled>右へ排出テスト ▶</button>
+  </div>
+  <div class="row manual" style="margin-top:8px">
+    <span style="font-size:18px;width:9em">揺れ</span>
+    <button class="man" data-cmd="S" disabled>〜 揺れだけ試す</button>
+    <span class="note">止めるときは「停止」</span>
+  </div>
+</details>
+
+<details id="setBox">
+  <summary>認識の設定（先生用）</summary>
+  <div class="set" style="margin-top:10px">
+    <label for="sThr">仕分けに必要な確率（%）<small>オリジナルは 90。下げると間違いが増え、上げると動きにくくなる</small></label><input id="sThr" type="number" min="50" max="99" step="1">
+    <label for="sHold">同じ判定が続く時間（ミリ秒）<small>0 にするとオリジナルと同じ（1回でも超えたら送る）</small></label><input id="sHold" type="number" min="0" max="3000" step="50">
+    <label for="sCool">仕分け後に待つ時間（ミリ秒）<small>中央に戻ったあと、この時間は判定しても送らない</small></label><input id="sCool" type="number" min="0" max="5000" step="100">
+    <label for="sStuck">取り残しチェック（回）<small>「何もない」を見ないまま、この回数仕分けたら止める。0 = しない</small></label><input id="sStuck" type="number" min="0" max="20" step="1">
+    <label for="sGap">認識の間隔（ミリ秒）<small>0 = できるだけ速く（オリジナルと同じ）。PCが重いときは増やす</small></label><input id="sGap" type="number" min="0" max="1000" step="10">
+    <label for="sDone">完了を待つ上限（ミリ秒）<small>この時間内に Arduino から「仕分け完了」が来なければ止める</small></label><input id="sDone" type="number" min="2000" max="30000" step="500">
+  </div>
+  <div class="row" style="margin-top:10px"><button id="sReset" style="font-size:17px">初めの値に戻す</button></div>
+</details>
+
 <div class="card">
   <div id="msg">メッセージ：—</div>
-  <div id="log"></div>
+  <div id="log" aria-label="記録"></div>
 </div>
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8.3/dist/teachablemachine-image.min.js"></script>
 <script>
-// ===== 講師が調整する設定（設定例。実機・教室の照明で調整する）=====
-const THRESHOLD = 0.80;      // 一番大きい値がこれより小さいと「判定が不確か」として動かさない
-const FRAMES = 5;            // 何枚分の判定を平均するか
-const FRAME_GAP_MS = 100;    // 判定の間隔
-const DONE_TIMEOUT_MS = 4000;// 中央へ戻る返事を待つ時間（Arduino の RETURN_TIME より長く）
-const FLIP = true;           // Teachable Machine の撮影画面に合わせて左右反転（公式ライブラリの例に合わせた。要確認）
-const CMD = { LEFT: 'L', RIGHT: 'R' };
-// ====================================================================
+'use strict';
+// ===================== 設定の初めの値（「認識の設定」で変えられる）=====================
+const DEFAULTS = {
+  threshold: 90,     // %：オリジナルの p5.js と同じ 0.90
+  holdMs: 300,       // 同じ判定がこの時間続いたら送る（オリジナルは 0 ＝すぐ送る）
+  cooldownMs: 500,   // 仕分け完了後、この時間は送らない
+  stuckLimit: 3,     // 「何もない」を見ないまま連続で仕分けた回数の上限（0 = チェックしない）
+  gapMs: 0,          // 認識と認識の間の休み（オリジナルは休みなし）
+  doneTimeoutMs: 8000 // 送ってから「仕分け完了」を待つ上限
+};
+const FLIP = true;          // 鏡のように表示（Teachable Machine の撮影画面と同じ）
+const HEARTBEAT_MS = 1000;  // Arduino へ合図 H を送る間隔（Arduino 側は 3 秒途切れたら止める）
+// =====================================================================================
 
 const SERVICE_UUID = 'e5969935-3a7c-4236-9516-9cd2c60c2c6d';
 const COMMAND_UUID = '1c2fb868-731c-4916-bbc4-952cb7d5133a';
 const STATUS_UUID  = 'a483820f-fee4-499b-b366-738eeb482acb';
+const CMD = { START:'S', STOP:'X', SORT_L:'1', SORT_R:'2', HEART:'H', ASK:'?' };
 
 const $ = (id) => document.getElementById(id);
-let model = null, webcam = null, device = null, commandChar = null;
-let busy = false, doneTimer = null;
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-function log(t) { $('log').textContent = new Date().toLocaleTimeString('ja-JP') + '  ' + t + '\n' + $('log').textContent; }
+// ---- 状態 ----
+let model = null, labels = [], mapping = {};   // mapping[クラス名] = 'L' | 'R' | 'N'
+let webcam = null, camLoopOn = false;
+let device = null, commandChar = null, statusChar = null, connecting = false;
+let gattChain = Promise.resolve(), gattPending = 0, heartTimer = null;
+let arduino = { state:'NONE', detail:'' };       // Arduino から届いた最新の状態
+let autoRunning = false;    // 「自動運転開始」を押して動いているか（ページ側）
+let shakeOnly = false;      // 「揺れだけ試す」中か
+let sortLock = false;       // 仕分け命令を送って、完了を待っているか
+let sortSide = null, doneTimer = null, cooldownUntil = 0;
+let candidate = null;       // { cls, since, frames }
+let sortsWithoutEmpty = 0, sawEmpty = true;
+let inferOn = false;        // 認識のループが動いているか（重ならないように1つだけ）
+let counts = { L:0, R:0 };
+let stopNote = '';        // 止まった理由（取り残し・通信切れ・エラー）を表示する
+let S = loadSettings();
+
+// ---- 記録・メッセージ ----
+function log(t) { const el = $('log'); el.textContent = new Date().toLocaleTimeString('ja-JP') + '  ' + t + '\n' + el.textContent.slice(0, 6000); }
 function msg(t, cls) { $('msg').textContent = 'メッセージ：' + t; $('msg').className = cls || ''; }
-function setRun(t) { $('runState').textContent = t; }
-function refresh() {
-  const conn = !!(device && device.gatt.connected && commandChar);
-  if (!busy && $('runState').textContent !== 'エラー') setRun(conn ? '準備中' : '未接続');
-  $('connect').disabled = conn; $('disconnect').disabled = !conn;
-  document.querySelectorAll('.man').forEach(b => b.disabled = !conn || busy);
-  $('go').disabled = !(conn && model && webcam) || busy;
-  $('camStart').disabled = !model;
-}
-try { const u = localStorage.getItem('tmModelURL'); if (u) $('url').value = u; } catch (e) {}
 
-// ---- モデル ----
+// ---- 設定の保存（このPCのこのブラウザだけ）----
+function loadSettings() {
+  let s = Object.assign({}, DEFAULTS);
+  try { const j = JSON.parse(localStorage.getItem('sorterSettings') || '{}'); Object.assign(s, j); } catch (e) {}
+  return s;
+}
+function saveSettings() { try { localStorage.setItem('sorterSettings', JSON.stringify(S)); } catch (e) {} }
+const setMap = { sThr:'threshold', sHold:'holdMs', sCool:'cooldownMs', sStuck:'stuckLimit', sGap:'gapMs', sDone:'doneTimeoutMs' };
+function showSettings() {
+  Object.keys(setMap).forEach(id => $(id).value = S[setMap[id]]);
+  $('thrText').textContent = S.threshold; $('holdText').textContent = (S.holdMs / 1000).toFixed(1);
+  document.querySelectorAll('.thr').forEach(t => t.style.left = S.threshold + '%');
+}
+Object.keys(setMap).forEach(id => $(id).addEventListener('change', () => {
+  const el = $(id); let v = Number(el.value);
+  if (!Number.isFinite(v)) v = DEFAULTS[setMap[id]];
+  v = Math.min(Number(el.max), Math.max(Number(el.min), v));
+  S[setMap[id]] = v; saveSettings(); showSettings(); log('設定：' + setMap[id] + ' = ' + v);
+}));
+$('sReset').onclick = () => { S = Object.assign({}, DEFAULTS); saveSettings(); showSettings(); log('設定を初めの値に戻しました'); };
+
+// ---- 画面の更新 ----
+function connected() { return !!(device && device.gatt && device.gatt.connected && commandChar); }
+function classesOK() {
+  if (!model || labels.length < 3) return false;
+  const v = labels.map(l => mapping[l]);
+  return v.includes('L') && v.includes('R') && v.includes('N');
+}
+function setChip(id, yes, text) { const c = $(id); c.className = 'chip ' + (yes ? 'yes' : 'no'); c.querySelector('span').textContent = text; }
+function setBanner(sym, text, kind) { $('bannerSym').textContent = sym; $('bannerText').textContent = text; $('banner').className = kind || ''; }
+function setFlow(n) { for (let i = 1; i <= 5; i++) $('f' + i).className = 'step' + (i === n ? ' now' : ''); }
+
+function refresh() {
+  const conn = connected();
+  const busyArduino = ['SORT', 'RETURN'].includes(arduino.state);
+  const moving = autoRunning || shakeOnly || busyArduino || arduino.state === 'SHAKE';
+  $('connect').disabled = conn || connecting;
+  $('disconnect').disabled = !conn;
+  $('camStart').disabled = !!webcam;
+  $('load').disabled = false;
+  $('autoStart').disabled = !(conn && webcam && classesOK()) || moving;
+  $('stop').disabled = !conn;
+  document.querySelectorAll('.man').forEach(b => b.disabled = !conn || moving);
+
+  setChip('rBle', conn, conn ? '接続済み' : (connecting ? '接続中…' : '未接続'));
+  setChip('rCam', !!webcam, webcam ? '映っている' : '未開始');
+  setChip('rModel', classesOK(), !model ? '未読み込み' : (classesOK() ? '読み込み済み' : 'クラスを確認'));
+  setChip('rAuto', autoRunning, autoRunning ? '動作中' : '停止中');
+
+  // 大きな状態表示
+  if (!conn) {
+    setBanner('■', connecting ? '接続中…：機器を選んでください' : '未接続：「Bluetooth接続」を押してください', 'stopB'); setFlow(0); return;
+  }
+  const st = arduino.state, d = arduino.detail;
+  if (st === 'SHAKE') {
+    if (autoRunning) {
+      setBanner('〜', sortLock ? '仕分け命令を送りました' : '動作中：揺れて材料を送り、認識しています', 'run');
+      setFlow(candidate ? 2 : 1);
+    } else { setBanner('〜', '揺れテスト中：止めるときは「停止」', 'run'); setFlow(1); }
+  } else if (st === 'SORT') {
+    const side = d.startsWith('L') ? '左' : '右';
+    setBanner(side === '左' ? '◀' : '▶', side + 'へ排出中（' + d.split(':')[1] + '°）', 'run'); setFlow(3);
+  } else if (st === 'RETURN') {
+    setBanner('●', '中央へ戻っています', 'run'); setFlow(4);
+  } else if (stopNote && ['IDLE', 'STOP', 'TIMEOUT'].includes(st)) {
+    setBanner('✕', stopNote, 'err'); setFlow(0);
+  } else if (['IDLE', 'STOP', 'TIMEOUT', 'DISCONNECT'].includes(st)) {
+    const pos = d.startsWith('L') ? '左 ' + d.split(':')[1] + '°' : d.startsWith('R') ? '右 ' + d.split(':')[1] + '°' : '中央';
+    const ready = webcam && classesOK();
+    setBanner('■', '停止中（' + pos + '）' + (ready ? '：「自動運転開始」で動きます' : '：接続済み'), 'stopB'); setFlow(0);
+  } else {
+    setBanner('■', '接続済み：状態を確認中…', 'stopB'); setFlow(0);
+  }
+}
+
+// ======================= モデル =======================
+function defaultMapping(ls) {
+  const m = {};
+  ls.forEach(l => {
+    if (/^(left|左)/i.test(l)) m[l] = 'L';
+    else if (/^(right|右)/i.test(l)) m[l] = 'R';
+  });
+  // 名前で決まらないとき：オリジナルと同じく 1番目＝左、2番目＝右、ほか＝動かさない
+  if (!Object.values(m).includes('L') && !m[ls[0]]) m[ls[0]] = 'L';
+  if (!Object.values(m).includes('R') && !m[ls[1]]) m[ls[1]] = 'R';
+  ls.forEach(l => { if (!m[l]) m[l] = 'N'; });
+  return m;
+}
+function buildBars() {
+  const box = $('bars'); box.innerHTML = '';
+  labels.forEach((l, i) => {
+    const row = document.createElement('div'); row.className = 'bar'; row.id = 'bar' + i;
+    row.innerHTML = '<span class="name"></span><div class="track"><div class="fill"></div><div class="thr"></div></div><span class="pct">—</span>' +
+      '<select aria-label="仕分け先"><option value="L">◀ 左へ</option><option value="R">右へ ▶</option><option value="N">動かさない</option></select>';
+    row.querySelector('.name').textContent = l; row.querySelector('.name').title = l;
+    const sel = row.querySelector('select'); sel.value = mapping[l];
+    sel.onchange = () => { mapping[l] = sel.value; log('仕分け先：' + l + ' → ' + sideName(sel.value)); checkClasses(); refresh(); };
+    box.appendChild(row);
+  });
+  showSettings();
+}
+function sideName(v) { return v === 'L' ? '左' : v === 'R' ? '右' : '動かさない'; }
 function checkClasses() {
-  const labels = model.getClassLabels();
-  const need = ['LEFT', 'RIGHT', 'EMPTY'];
-  const miss = need.filter(n => !labels.includes(n));
-  if (miss.length) { msg('クラス名が違います（' + labels.join(', ') + '）。LEFT・RIGHT・EMPTY にしてください', 'ng'); model = null; $('modelState').textContent = 'エラー'; return false; }
-  $('modelState').textContent = '読み込み済み'; $('modelState').className = 'status ok';
-  msg('モデルを読み込みました。カメラを開始してください', 'ok'); return true;
+  if (labels.length < 3) {
+    msg('クラスが ' + labels.length + ' つしかありません。分けたい物ごとに1つずつ＋「何もない（空の受け皿）」の、3つ以上で作り直してください', 'ng');
+    return false;
+  }
+  const v = labels.map(l => mapping[l]);
+  if (!v.includes('L') || !v.includes('R')) { msg('「左へ」と「右へ」のクラスを1つずつ選んでください', 'ng'); return false; }
+  if (!v.includes('N')) { msg('「動かさない」クラス（何もないとき）が必要です', 'ng'); return false; }
+  return true;
+}
+function afterModel(src) {
+  labels = model.getClassLabels();
+  mapping = defaultMapping(labels);
+  buildBars();
+  log('モデル：' + src + '／クラス：' + labels.map(l => l + '→' + sideName(mapping[l])).join('、'));
+  if (checkClasses()) msg('モデルを読み込みました（' + labels.join('・') + '）。仕分け先を確認してください', 'ok');
+  startInference();
 }
 $('load').onclick = async () => {
   let u = $('url').value.trim();
   if (!u) { msg('モデルURLを入れてください', 'ng'); return; }
+  if (!/^https:\/\//.test(u)) { msg('https:// から始まるURLを入れてください', 'ng'); return; }
   if (!u.endsWith('/')) u += '/';
+  if (autoRunning) { msg('自動運転中はモデルを変えられません。先に「停止」', 'ng'); return; }
+  $('load').disabled = true; setChip('rModel', false, '読み込み中…');
   try {
-    $('modelState').textContent = '読み込み中…';
-    model = await tmImage.load(u + 'model.json', u + 'metadata.json');
-    if (checkClasses()) { try { localStorage.setItem('tmModelURL', u); } catch (e) {} log('モデル：' + u); }
-  } catch (e) { model = null; $('modelState').textContent = 'エラー'; msg('読み込めませんでした。URLを確認してください', 'ng'); log(e.message); }
+    const m = await tmImage.load(u + 'model.json', u + 'metadata.json');
+    model = m; afterModel(u);
+    try { localStorage.setItem('tmModelURL', u); } catch (e) {}
+  } catch (e) { msg('モデルを読み込めませんでした。URLと「モデルをアップロード」したかを確認してください', 'ng'); log('モデル読み込み失敗：' + e.message); }
   refresh();
 };
 $('loadFiles').onclick = async () => {
   const m = $('fModel').files[0], w = $('fWeights').files[0], md = $('fMeta').files[0];
   if (!m || !w || !md) { msg('3つのファイルを選んでください', 'ng'); return; }
-  try { model = await tmImage.loadFromFiles(m, w, md); if (checkClasses()) log('モデル：ファイルから'); }
-  catch (e) { model = null; msg('ファイルから読み込めませんでした', 'ng'); log(e.message); }
+  if (autoRunning) { msg('自動運転中はモデルを変えられません。先に「停止」', 'ng'); return; }
+  try { model = await tmImage.loadFromFiles(m, w, md); afterModel('ファイル'); }
+  catch (e) { msg('ファイルから読み込めませんでした', 'ng'); log(e.message); }
   refresh();
 };
+try { const u = localStorage.getItem('tmModelURL'); if (u) $('url').value = u; } catch (e) {}
 
-// ---- カメラ ----
+// ======================= カメラ =======================
 async function listCams() {
   try {
+    const sel = $('camSelect'), keep = sel.value;
+    while (sel.options.length > 1) sel.remove(1);
     const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
-    devs.forEach((d, i) => { const o = document.createElement('option'); o.value = d.deviceId; o.textContent = d.label || ('カメラ ' + (i + 1)); $('camSelect').appendChild(o); });
+    devs.forEach((d, i) => { const o = document.createElement('option'); o.value = d.deviceId; o.textContent = d.label || ('カメラ ' + (i + 1)); sel.appendChild(o); });
+    sel.value = keep;
   } catch (e) { log('カメラ一覧を取得できません：' + e.message); }
 }
-listCams();
-$('camStart').onclick = async () => {
+async function startCamera() {
   try {
-    if (webcam) webcam.stop();
-    webcam = new tmImage.Webcam(320, 320, FLIP);
+    if (webcam) { webcam.stop(); webcam = null; }
+    const w = new tmImage.Webcam(320, 320, FLIP);
     const id = $('camSelect').value;
-    await webcam.setup(id ? { deviceId: { exact: id } } : {});
-    await webcam.play();
+    await w.setup(id ? { deviceId: { exact: id } } : {});
+    await w.play();
+    webcam = w;
     $('cam').innerHTML = ''; $('cam').appendChild(webcam.canvas);
-    if ($('camSelect').options.length <= 1) listCams();
-    (function loop() { webcam.update(); requestAnimationFrame(loop); })();
-    msg('カメラを開始しました。2時間目と同じ映り方か確認してください', 'ok');
-  } catch (e) { webcam = null; msg('カメラを開始できません。カメラの許可・選択を確認し、Teachable Machine の画面でカメラを使っていたら止めてください', 'ng'); log(e.message); }
+    listCams();
+    if (!camLoopOn) { camLoopOn = true; (function loop() { if (webcam) webcam.update(); requestAnimationFrame(loop); })(); }
+    msg('カメラを開始しました。受け皿が画面の中央に映るように合わせてください', 'ok');
+    log('カメラ開始');
+    startInference();
+  } catch (e) {
+    webcam = null;
+    msg('カメラを開始できません。カメラの許可・選択を確認し、Teachable Machine など他の画面でカメラを使っていたら閉じてください', 'ng');
+    log('カメラ失敗：' + e.message);
+  }
   refresh();
-};
+}
+$('camStart').onclick = startCamera;
+$('camSelect').onchange = () => { if (webcam) startCamera(); };
+listCams();
 
-// ---- Bluetooth ----
-if (!('bluetooth' in navigator)) msg('このブラウザでは Bluetooth が使えません（PC の Chrome で開いてください）', 'ng');
-$('connect').onclick = async () => {
+// ======================= 認識（重ならないように1つのループだけ）=======================
+function startInference() {
+  if (inferOn || !model || !webcam) return;
+  inferOn = true;
+  inferLoop();
+}
+async function inferLoop() {
+  if (!model || !webcam) { inferOn = false; return; }
   try {
-    $('bleState').textContent = '機器をえらんでいます…';
-    device = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: 'Sorter-' }], optionalServices: [SERVICE_UUID] });
-    device.addEventListener('gattserverdisconnected', () => { commandChar = null; $('bleState').textContent = '未接続'; $('bleState').className = 'status'; busy = false; setRun('準備中'); log('切断されました'); refresh(); });
-    const server = await device.gatt.connect();
-    const service = await server.getPrimaryService(SERVICE_UUID);
-    commandChar = await service.getCharacteristic(COMMAND_UUID);
-    const st = await service.getCharacteristic(STATUS_UUID);
-    await st.startNotifications();
-    st.addEventListener('characteristicvaluechanged', (e) => {
-      const s = new TextDecoder().decode(e.target.value); log('返事：' + s);
-      if (busy && s.startsWith('auto C')) finish('完了：中央へ戻りました。次の物を置けます');
-    });
-    $('bleState').textContent = '接続済み（' + device.name + '）'; $('bleState').className = 'status ok'; setRun('準備中');
-    log('接続：' + device.name);
-  } catch (e) { $('bleState').textContent = '未接続'; msg('接続できませんでした', 'ng'); log(e.message); }
+    const pred = await model.predict(webcam.canvas);   // この認識が終わるまで次は始めない
+    onPrediction(pred);
+  } catch (e) { log('認識エラー：' + e.message); await sleep(500); }
+  setTimeout(inferLoop, S.gapMs);
+}
+
+function onPrediction(pred) {
+  // 表示：実際のクラス名と確率
+  let top = null;
+  pred.forEach((p, i) => {
+    const row = $('bar' + i); if (!row) return;
+    row.querySelector('.fill').style.width = (p.probability * 100).toFixed(0) + '%';
+    row.querySelector('.pct').textContent = (p.probability * 100).toFixed(0) + '%';
+    if (!top || p.probability > top.probability) top = p;
+  });
+  pred.forEach((p, i) => { const row = $('bar' + i); if (row) row.classList.toggle('top', p === top); });
+  if (!top) return;
+  const now = performance.now();
+  const action = mapping[top.className] || 'N';
+  const sure = top.probability * 100 >= S.threshold;
+  $('judge').textContent = '今の判定：' + top.className + ' ' + (top.probability * 100).toFixed(0) + '%' +
+    (sure ? (action === 'N' ? '（動かさない）' : '（' + sideName(action) + 'へ）') : '（不確か）');
+
+  if (sure && action === 'N') sawEmpty = true;   // 「何もない」を見た
+
+  // 自動運転で、Arduino が揺れている間だけ仕分けを考える
+  const canSend = autoRunning && arduino.state === 'SHAKE' && !sortLock && now >= cooldownUntil && connected();
+  if (!canSend || !sure || action === 'N') {
+    candidate = null; $('holdFill').style.width = '0';
+    if (autoRunning) refresh();
+    return;
+  }
+  if (!candidate || candidate.cls !== top.className) candidate = { cls: top.className, since: now, frames: 0 };
+  candidate.frames++;
+  const held = now - candidate.since;
+  $('holdFill').style.width = Math.min(100, S.holdMs ? held / S.holdMs * 100 : 100) + '%';
+  if (held >= S.holdMs && (S.holdMs === 0 || candidate.frames >= 2)) {
+    sendSort(action, top.className, top.probability);
+  } else refresh();
+}
+
+function sendSort(side, cls, prob) {
+  // 取り残しチェック：「何もない」を一度も見ないまま続けて仕分けていないか
+  if (sawEmpty) sortsWithoutEmpty = 0;
+  sortsWithoutEmpty++;
+  sawEmpty = false;
+  if (S.stuckLimit > 0 && sortsWithoutEmpty > S.stuckLimit) {
+    log('取り残しの疑い：「何もない」を見ないまま ' + S.stuckLimit + ' 回仕分けた');
+    stopAuto('STUCK');
+    msg('受け皿に物が残っているかもしれません。取り除いてから「自動運転開始」を押してください', 'ng');
+    return;
+  }
+  sortLock = true; sortSide = side; candidate = null; $('holdFill').style.width = '0';
+  snapshot(side);
+  log('判定：' + cls + ' ' + (prob * 100).toFixed(0) + '% → ' + sideName(side) + 'へ仕分け');
+  send(side === 'L' ? CMD.SORT_L : CMD.SORT_R).catch(e => { log('送信失敗：' + e.message); });
+  clearTimeout(doneTimer);
+  doneTimer = setTimeout(() => {
+    if (!sortLock) return;
+    log('仕分け完了の返事が来ません');
+    stopAuto('ERROR');
+    msg('Arduino から「仕分け完了」が来ないので止めました。接続と Arduino を確認してください', 'ng');
+  }, S.doneTimeoutMs);
   refresh();
-};
-$('disconnect').onclick = () => { if (device && device.gatt.connected) device.gatt.disconnect(); };
-async function send(c) { await commandChar.writeValueWithoutResponse(new Uint8Array([c.charCodeAt(0)])); log('送信：' + c); }
-document.querySelectorAll('.man').forEach(b => b.onclick = async () => { try { await send(b.dataset.cmd); msg('手動で命令 ' + b.dataset.cmd + ' を送りました'); } catch (e) { msg('送れませんでした', 'ng'); log(e.message); } });
+}
 
-// ---- 判定して仕分ける（1回押すと1回だけ）----
-function show(avg) { ['LEFT', 'RIGHT', 'EMPTY'].forEach(c => { const v = avg[c] || 0; $('p' + c).style.width = (v * 100).toFixed(0) + '%'; $('t' + c).textContent = (v * 100).toFixed(0) + '%'; }); }
-function finish(t) { busy = false; clearTimeout(doneTimer); setRun('完了'); msg(t, 'ok'); refresh(); }
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-$('go').onclick = async () => {
-  if (busy) return;
-  busy = true; setRun('動作中'); refresh(); msg('判定しています…');
-  try {
-    const sum = {};
-    for (let i = 0; i < FRAMES; i++) {
-      webcam.update();
-      const p = await model.predict(webcam.canvas);
-      p.forEach(x => sum[x.className] = (sum[x.className] || 0) + x.probability);
-      await sleep(FRAME_GAP_MS);
+// 仕分けた瞬間の画像を小さく残す（オリジナルの写真の並びにならう）
+function snapshot(side) {
+  if (!webcam) return;
+  const c = document.createElement('canvas'); c.width = 56; c.height = 56;
+  c.getContext('2d').drawImage(webcam.canvas, 0, 0, 56, 56);
+  const box = side === 'L' ? $('thL') : $('thR');
+  box.prepend(c);
+  while (box.children.length > 8) box.lastChild.remove();
+}
+
+// ======================= Bluetooth =======================
+// GATT の操作は1つずつ順番に行う（重なると失敗するため）
+function gattOp(fn) {
+  gattPending++;
+  const p = gattChain.then(fn).finally(() => { gattPending--; });
+  gattChain = p.catch(() => {});
+  return p;
+}
+function send(c) {
+  const ch = commandChar;
+  if (!ch) return Promise.reject(new Error('未接続'));
+  return gattOp(async () => {
+    if (ch !== commandChar) throw new Error('接続が切り替わりました');
+    await ch.writeValueWithResponse(new Uint8Array([c.charCodeAt(0)]));
+    if (c !== CMD.HEART) log('送信：' + c);
+  });
+}
+function onStatus(e) {
+  const s = new TextDecoder().decode(e.target.value).trim();
+  if (!s) return;
+  log('Arduino：' + s);
+  const i = s.indexOf(':');
+  const st = i < 0 ? s : s.slice(0, i), d = i < 0 ? '' : s.slice(i + 1);
+  if (st === 'BUSY') { if (d === 'S') shakeOnly = false; msg('Arduino が動作中のため、命令 ' + d + ' は受け付けられませんでした'); return; }
+  if (st === 'ERR') { msg('Arduino が知らない命令です：' + d, 'ng'); return; }
+  if (st === 'DONE') {
+    if (sortLock) {
+      sortLock = false; clearTimeout(doneTimer);
+      cooldownUntil = performance.now() + S.cooldownMs;
+      if (autoRunning) { counts[d] = (counts[d] || 0) + 1; $('cntL').textContent = counts.L; $('cntR').textContent = counts.R; }
     }
-    const avg = {}; Object.keys(sum).forEach(k => avg[k] = sum[k] / FRAMES); show(avg);
-    const top = Object.keys(avg).sort((a, b) => avg[b] - avg[a])[0];
-    log('判定：' + top + ' ' + (avg[top] * 100).toFixed(0) + '%');
-    if (top === 'EMPTY') { busy = false; setRun('準備中'); msg('EMPTY：何も置かれていません。動かしません'); refresh(); return; }
-    if (avg[top] < THRESHOLD) { busy = false; setRun('準備中'); msg('判定が不確かです。置き直して、もう一度押してください', 'ng'); refresh(); return; }
-    await send(CMD[top]);
-    msg(top + ' と判定 → 命令 ' + CMD[top] + ' を送りました');
-    doneTimer = setTimeout(async () => {
-      try { await send('C'); } catch (e) {}
-      finish('中央へ戻す命令を送りました（RETURN_TIME の設定を確認）');
-    }, DONE_TIMEOUT_MS);
-  } catch (e) { busy = false; setRun('エラー'); msg('エラー：接続とカメラを確認して、もう一度試してください', 'ng'); log(e.message); refresh(); }
+    if (autoRunning) arduino = { state: 'SHAKE', detail: '' };  // 自動運転中は続けて揺れを再開する
+    refresh(); return;
+  }
+  arduino = { state: st, detail: d };
+  if (st === 'STOP' || st === 'TIMEOUT' || st === 'IDLE' || st === 'DISCONNECT') {
+    if (st === 'TIMEOUT') { stopNote = '停止：通信が途切れたため止まりました。確認してから「自動運転開始」'; msg('通信が途切れたため、Arduino が止まりました', 'ng'); }
+    if (autoRunning || shakeOnly) { autoRunning = false; shakeOnly = false; }
+    sortLock = false; clearTimeout(doneTimer);
+  }
+  refresh();
+}
+function onDisconnected() {
+  log('切断されました');
+  commandChar = null;
+  if (statusChar) { statusChar.removeEventListener('characteristicvaluechanged', onStatus); statusChar = null; }
+  gattChain = Promise.resolve(); gattPending = 0;
+  clearInterval(heartTimer); heartTimer = null;
+  const wasRunning = autoRunning || shakeOnly;
+  autoRunning = false; shakeOnly = false; sortLock = false; clearTimeout(doneTimer); candidate = null;
+  arduino = { state: 'NONE', detail: '' };
+  msg(wasRunning ? '切断されたので自動運転を止めました（Arduino は中央へ戻ります）。つなぎ直しても自動では再開しません'
+                 : '切断されました。もう一度「Bluetooth接続」を押してください', wasRunning ? 'ng' : '');
+  $('devName').textContent = '機器：—';
+  refresh();
+}
+async function connect() {
+  if (connecting || connected()) return;   // 2回押し防止
+  if (!('bluetooth' in navigator)) { msg('このブラウザでは Bluetooth が使えません。PC の Chrome で開いてください', 'ng'); return; }
+  connecting = true; refresh();
+  try {
+    const dev = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: 'Sorter-' }], optionalServices: [SERVICE_UUID] });
+    if (device && device !== dev) device.removeEventListener('gattserverdisconnected', onDisconnected);
+    device = dev;
+    device.removeEventListener('gattserverdisconnected', onDisconnected);   // 二重登録しない
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+    let server = null, lastErr = null;
+    for (let t = 1; t <= 2 && !server; t++) {        // つながらないときは1回だけやり直す
+      try { server = await device.gatt.connect(); }
+      catch (e) { lastErr = e; log('接続の試み ' + t + ' 回目：失敗（' + e.message + '）'); await sleep(800); }
+    }
+    if (!server) throw lastErr;
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    const cmd = await service.getCharacteristic(COMMAND_UUID);
+    const st = await service.getCharacteristic(STATUS_UUID);
+    st.addEventListener('characteristicvaluechanged', onStatus);
+    await st.startNotifications();
+    commandChar = cmd; statusChar = st;
+    gattChain = Promise.resolve();
+    // 今の状態を読む
+    await gattOp(async () => { const v = await st.readValue(); onStatus({ target: { value: v } }); });
+    clearInterval(heartTimer);
+    heartTimer = setInterval(() => { if (connected() && gattPending === 0) send(CMD.HEART).catch(() => {}); }, HEARTBEAT_MS);
+    $('devName').textContent = '機器：' + device.name;
+    log('接続：' + device.name);
+    msg('接続しました（' + device.name + '）。自動運転は「自動運転開始」を押すまで始まりません', 'ok');
+  } catch (e) {
+    if (e && e.name === 'NotFoundError') msg('機器の選択が取り消されました。もう一度「Bluetooth接続」を押してください');
+    else msg('接続できませんでした。Arduino の電源・機器名・距離を確認して、もう一度押してください', 'ng');
+    log('接続失敗：' + (e ? e.message : ''));
+    if (device && device.gatt.connected) device.gatt.disconnect();
+    commandChar = null; statusChar = null;
+  } finally {
+    connecting = false; refresh();
+  }
+}
+$('connect').onclick = connect;
+$('disconnect').onclick = () => { if (device && device.gatt.connected) device.gatt.disconnect(); };
+
+// ======================= 自動運転・停止・手動 =======================
+$('autoStart').onclick = async () => {
+  if (!(connected() && webcam && classesOK())) { msg('Bluetooth・カメラ・AIモデルの3つがそろうと開始できます', 'ng'); return; }
+  if (autoRunning) return;
+  autoRunning = true; shakeOnly = false; sortLock = false; candidate = null; stopNote = '';
+  sortsWithoutEmpty = 0; sawEmpty = true; cooldownUntil = 0;
+  refresh();
+  try { await send(CMD.START); msg('自動運転を開始しました。止めるときは「停止」', 'ok'); log('自動運転開始'); }
+  catch (e) { autoRunning = false; msg('開始の命令を送れませんでした', 'ng'); log(e.message); refresh(); }
 };
+function stopAuto(reason) {
+  const wasRunning = autoRunning || shakeOnly;
+  autoRunning = false; shakeOnly = false; sortLock = false; clearTimeout(doneTimer); candidate = null;
+  if (reason === 'STUCK') stopNote = '停止：対象物を取り除いてから「自動運転開始」を押してください';
+  else if (reason === 'ERROR') stopNote = '停止：仕分け完了の返事が来ませんでした。接続と Arduino を確認';
+  else stopNote = '';
+  if (connected()) send(CMD.STOP).catch(e => log('停止の送信失敗：' + e.message));
+  if (wasRunning) log('停止（' + reason + '）');
+  refresh();
+}
+$('stop').onclick = () => { stopAuto('ボタン'); msg('停止しました。中央へ戻ります'); };
+document.querySelectorAll('.man').forEach(b => b.onclick = async () => {
+  const c = b.dataset.cmd;
+  if (autoRunning) { msg('自動運転中は手動で動かせません。先に「停止」', 'ng'); return; }
+  if (c === 'S') shakeOnly = true;
+  stopNote = '';
+  try { await send(c); msg('手動：' + b.textContent.trim()); }
+  catch (e) { if (c === 'S') shakeOnly = false; msg('送れませんでした', 'ng'); log(e.message); }
+  refresh();
+});
+// ページを閉じるときは止める
+window.addEventListener('pagehide', () => { if (connected() && (autoRunning || shakeOnly)) { try { commandChar.writeValueWithoutResponse(new Uint8Array([88])); } catch (e) {} } });
+
+if (!('bluetooth' in navigator)) msg('このブラウザでは Bluetooth が使えません。PC の Chrome で開いてください', 'ng');
+if (!window.isSecureContext) msg('このページは https:// で開いてください（カメラと Bluetooth が使えません）', 'ng');
+showSettings();
 refresh();
 </script>
 </body>
